@@ -1,0 +1,699 @@
+---------------------------------
+------- PROJET TRANSVERSE -------
+---------------------------------
+------- Emilie GROSCHENE --------
+------- Clara NUSSBAUMER --------
+----- Pedro SANTIAGO UGARTE -----
+-------- David VELANDIA ---------
+---------------------------------
+--- 1. ETUDE GLOBAL ---
+
+---1.A) REPARTITION CLIENT :
+select * from client limit 15;
+
+ALTER TABLE client ADD repartition_client varchar(30);
+
+UPDATE client SET repartition_client =
+    (CASE 
+        WHEN vip = 1 THEN 'VIP'
+        WHEN extract(year from datedebutadhesion) = 2016 THEN 'NEW_N2'
+        WHEN extract(year from datedebutadhesion) = 2017 THEN 'NEW_N1'
+        WHEN datefinadhesion > '2018/01/01' THEN 'ADHERENT'
+        WHEN CHURNER = true THEN 'CHURNER'
+        ELSE null
+    END);
+
+    --- Voici la table que nous exportons avec les données pour créer le graph sur excel ---
+
+SELECT repartition_client, count(repartition_client)from client 
+group by repartition_client order by count(repartition_client) desc;
+
+--- 1.B) COMPORTEMENT CA GLOBAL PAR CLIENT N-2 VS N-1 : 
+
+-- Nous exportons les données séparément pour chaque année afin de pouvoir les traiter sur excel.
+
+-- CA TOTAl des client N-2(2016)
+select idclient, round(sum(tic_totalttc)) as CA_total_ttc_2016
+from entete_ticket
+where extract(year from tic_date)=2016
+group by idclient
+having round(sum(tic_totalttc)) >0; -- valeurs abérantes
+
+-- CA TOTAL des clients N-1(2017)
+select idclient, round(sum(tic_totalttc)) as CA_total_ttc_2017
+from entete_ticket
+where extract(year from tic_date)=2017
+group by idclient
+having round(sum(tic_totalttc)) >0; -- valeurs abérantes
+
+--- 1.C) REPARTION PAR AGE & SEXE :
+
+-- Ajout de la colonne sexe dans la table client en fonction de la civilité
+alter table client add sexe varchar(5);
+update client set sexe =
+    (case
+        when civilite = 'Madame' then 'Femme'
+        when civilite = 'Monsieur' then 'Homme'
+        else null
+    end);
+
+-- Ajout de la colonne tranche_age dans la table client en fonction de l'âge du client
+alter table client add tranche_age varchar(8);
+update client set tranche_age =
+    (case
+        when age >=18 and age <=30 then '[18;30]'
+        when age >=31 and age <=40 then '[31;40]'
+        when age >=41 and age <=50 then '[41;50]'
+        when age >=51 and age <=60 then '[51;60]'
+        when age >=61 and age <=70 then '[61;70]'
+        when age >=71 and age <=80 then '[71;80]'
+        when age >=81 and age <=90 then '[81;90]'
+        when age >=91 and age <=100 then '[91;100]'
+        else null
+    end);
+
+-- Nous pouvons également classifier sociologiquement les personnes en fonction de leur tranche:   
+alter table client add classification varchar(50);
+update client set classification =
+    (case
+        when tranche_age = '[18;30]'then 'Jeune adulte (entre 18 et 30 ans)'
+        when tranche_age = '[31;40]'then 'Adulte (entre 31 et 50 ans)'
+        when tranche_age = '[41;50]'then 'Adulte (entre 31 et 50 ans)'
+        when tranche_age = '[51;60]'then 'Senior (entre 51 et 60 ans)'
+        when tranche_age = '[61;70]'then 'Jeune retraité (entre 61 et 70 ans)'
+        when tranche_age = '[71;80]'then 'Retraité (entre 71 et 100 ans)'
+        when tranche_age = '[81;90]'then 'Retraité (entre 71 et 100 ans)'
+        when tranche_age = '[91;100]'then 'Retraité (entre 71 et 100 ans)'
+        else null
+    end);
+
+
+		-- Nous créons une nouvelle table repart_sexe_age qui intègre le résultat de notre requête (dans la requête nous ne 
+		-- sélectionnons que les âges entre 18 et 100 ans afin d'écarter les valeurs aberrantes)--
+create table if not exists repart_sexe_age (
+    tranche_age varchar(8),
+    classification varchar(50),
+    femme integer,
+    homme integer
+    );
+
+insert into repart_sexe_age (tranche_age, classification, femme, homme) select tranche_age, classification,
+sum(CASE WHEN sexe = 'Femme' THEN 1 ELSE 0 END) as Femme,
+sum(CASE WHEN sexe = 'Homme' THEN 1 ELSE 0 END) as Homme
+from client
+where age between 18 and 100
+group by tranche_age, classification
+order by tranche_age asc, classification;
+
+select * from repart_sexe_age;  
+
+
+		-- Export de la table repart_sexe_age au format csv (séparateur ;) pour data vizualisation sous forme de pyramide des 
+		-- âges sous Excel.--
+
+----------------------------------------
+
+--- 2. ETUDE PAR MAGASIN ---
+--- 2.A) Résultat par magasin (+1 ligne Total) :
+
+-- Création de la Table T1 avec les 5 premieres informations de la table souhaitée. Après, nous allons joindre cette 
+-- table avec d'autres. 
+DROP TABLE IF exists T1;
+
+CREATE TABLE IF NOT EXISTS T1 
+(
+MAGASIN VARCHAR (15),
+VILLE VARCHAR(50),
+DEPARTEMENT INTEGER,
+REGION VARCHAR(50),
+N_CLIENTS INTEGER
+);
+
+INSERT INTO T1
+(
+MAGASIN, VILLE, DEPARTEMENT, REGION, N_CLIENTS
+)
+SELECT MAGASIN, VILLE, LIBELLEDEPARTEMENT DEPARTEMENT, LIBELLEREGIONCOMMERCIALE REGION,
+COUNT(DISTINCT IDCLIENT) N_CLIENTS
+FROM CLIENT C
+INNER JOIN REF_MAGASIN M
+ON C.MAGASIN = M.CODESOCIETE
+GROUP BY MAGASIN, VILLE, LIBELLEDEPARTEMENT, LIBELLEREGIONCOMMERCIALE;
+
+-- Création de la table TN1 avec les informations de Nº de clients et TTC pour l'année 2017 (N-1)
+DROP TABLE IF exists TN1;
+
+CREATE TABLE IF NOT EXISTS TN1 
+(
+MAGASIN VARCHAR (15),
+CLIENT_N1 BIGINT, 
+TTC_N1 FLOAT
+);
+
+INSERT INTO TN1
+(
+MAGASIN, CLIENT_N1, TTC_N1 
+)
+SELECT MAG_CODE, COUNT(DISTINCT IDCLIENT), ROUND(SUM(TIC_TOTALTTC ::numeric))
+FROM ENTETE_TICKET 
+WHERE EXTRACT('YEAR' FROM TIC_DATE) = 2017 
+GROUP BY MAG_CODE;
+
+-- Création de la table TN1 avec les informations de Nº de clients et TTC pour l'année 2016 (N-2)
+DROP TABLE IF exists TN2;
+
+CREATE TABLE IF NOT EXISTS TN2 
+(
+MAGASIN VARCHAR (15),
+CLIENT_N2 BIGINT, 
+TTC_N2 FLOAT
+);
+
+INSERT INTO TN2
+(
+MAGASIN, CLIENT_N2, TTC_N2 
+)
+SELECT MAG_CODE, COUNT(DISTINCT IDCLIENT), ROUND(SUM(TIC_TOTALTTC ::numeric))
+FROM ENTETE_TICKET 
+WHERE EXTRACT('YEAR' FROM TIC_DATE) = 2016 
+GROUP BY MAG_CODE;
+
+-- Création de la table consolidée grace à la joincture des tables crées précedement 
+DROP TABLE IF exists TABCONSO;
+
+CREATE TABLE IF NOT EXISTS TABCONSO
+(
+MAGASIN VARCHAR(15),
+VILLE VARCHAR(50),
+DEPARTEMENT INTEGER,
+REGION VARCHAR(50),
+N_CLIENTS INTEGER,
+CLIENT_N1 BIGINT, 
+CLIENT_N2 BIGINT, 
+EVOL_CLIENT FLOAT,
+TTC_N1 FLOAT,
+TTC_N2 FLOAT,
+EVOL_TTC FLOAT
+)
+;
+
+INSERT INTO TABCONSO
+(
+MAGASIN, VILLE, DEPARTEMENT, REGION, N_CLIENTS, CLIENT_N2, TTC_N2, CLIENT_N1, TTC_N1
+)
+SELECT T1.MAGASIN, T1.VILLE, T1.DEPARTEMENT, T1.REGION, T1.N_CLIENTS,
+TN2.CLIENT_N2, TN2.TTC_N2, TN1.CLIENT_N1, TN1.TTC_N1
+FROM T1 
+INNER JOIN TN2
+ON T1.MAGASIN = TN2.MAGASIN
+INNER JOIN TN1
+ON TN2.MAGASIN = TN1.MAGASIN;
+
+-- Mise à jour des variables évolution (clients, TTC)
+
+UPDATE TABCONSO SET EVOL_CLIENT = 
+((CLIENT_N1::FLOAT/CLIENT_N2::FLOAT)-1)*100;
+
+UPDATE TABCONSO SET EVOL_TTC = 
+TTC_N1::FLOAT-TTC_N2::FLOAT;
+
+-- Total clients 845876 vs 844603 sur table
+-- Total 66 magasins vs 67 sur table : manque magasin EST, sans CA.
+	-- select count(distinct(idclient)) from client where magasin = 'EST' 
+	-- 1273	
+
+-- Création de l'indice d'évolution finale
+
+ALTER TABLE TABCONSO ADD INDICE_EVOL varchar(2);
+
+UPDATE TABCONSO SET INDICE_EVOL =
+    (CASE 
+        WHEN evol_client > 0 and evol_ttc > 0 THEN 1
+        WHEN evol_client <= 0 and evol_ttc <= 0 THEN -1
+        WHEN evol_client > 0 and evol_ttc <= 0 THEN 0
+        WHEN evol_client <= 0 and evol_ttc > 0 THEN 0
+        ELSE null
+    END);
+
+-- Tri de la table selon l'indice d'évolution
+
+DROP TABLE IF exists TABCONSO_TRI;
+
+CREATE TABLE IF NOT EXISTS TABCONSO_TRI
+(
+MAGASIN VARCHAR(15),
+VILLE VARCHAR(50),
+DEPARTEMENT INTEGER,
+REGION VARCHAR(50),
+N_CLIENTS INTEGER,
+CLIENT_N1 BIGINT, 
+CLIENT_N2 BIGINT, 
+EVOL_CLIENT FLOAT,
+TTC_N1 FLOAT,
+TTC_N2 FLOAT,
+EVOL_TTC FLOAT,
+INDICE_EVOL varchar(2)
+)
+;
+
+INSERT INTO TABCONSO_TRI
+(
+MAGASIN, VILLE, DEPARTEMENT, REGION, N_CLIENTS, CLIENT_N1, CLIENT_N2, EVOL_CLIENT, TTC_N1, TTC_N2, EVOL_TTC, INDICE_EVOL
+)
+select * from TABCONSO order by indice_evol desc;
+
+-- Ajouter la ligne +1 de totaux
+INSERT INTO tabconso_tri 
+(
+N_CLIENTS,  CLIENT_N2, TTC_N2, CLIENT_N1, TTC_N1, EVOL_CLIENT
+)
+SELECT 
+SUM(N_CLIENTS), SUM(CLIENT_N2), SUM(TTC_N2), SUM(CLIENT_N1), SUM(TTC_N1), SUM( EVOL_CLIENT)
+FROM tabconso_tri ;
+
+--- Mise à jour de la ligne de Total et arrondi des colonnes d'évolution à 2 chiffres
+ 
+UPDATE TABCONSO_TRI
+SET MAGASIN = 'TOTAL' WHERE MAGASIN IS NULL;
+UPDATE TABCONSO_TRI
+SET VILLE = 'FRANCE' WHERE MAGASIN = 'TOTAL';
+UPDATE TABCONSO_TRI
+SET DEPARTEMENT = 0 WHERE MAGASIN = 'TOTAL';
+UPDATE TABCONSO_TRI
+SET REGION = 'FR' WHERE MAGASIN = 'TOTAL';
+UPDATE TABCONSO_TRI
+SET EVOL_TTC = 
+TTC_N1::FLOAT-TTC_N2::FLOAT
+WHERE MAGASIN = 'TOTAL';
+UPDATE TABCONSO_TRI
+SET EVOL_CLIENT = 
+((CLIENT_N1::FLOAT/CLIENT_N2::FLOAT)-1)*100;
+UPDATE TABCONSO_TRI
+SET EVOL_TTC = 
+ROUND(EVOL_TTC::numeric,2);
+UPDATE TABCONSO_TRI
+SET INDICE_EVOL =
+    (CASE 
+        WHEN evol_client > 0 and evol_ttc > 0 THEN 1
+        WHEN evol_client <= 0 and evol_ttc <= 0 THEN -1
+        WHEN evol_client > 0 and evol_ttc <= 0 THEN 0
+        WHEN evol_client <= 0 and evol_ttc > 0 THEN 0
+        ELSE null
+    END);
+
+		-- Voici la table qu'on exporte pour créer le graph sur excel --
+		
+SELECT * FROM TABCONSO_TRI;
+
+--- B) Distance CLIENT / MAGASIN :
+
+-- Nous allons préparer 3 tables : une première avec les données INSEE et GPS triées ; une deuxième table avec les 
+-- données clients dont nous avons besoin et une troisième table avec les données magasin dont nous aurons besoin. 
+-- Nous mettrons toutes les tables ensemble une fois toutes les données triées, harmonisées et filtrées et nous y 
+-- appliquerons notre formule.
+
+    -- 1ère TABLE : DONNEES INSEE
+
+drop table IF EXISTS insee_gps;
+
+create table insee_gps 
+(
+    CODEINSEE varchar(10), 
+    CODE_POSTAL varchar(35), 
+    COMMUNE varchar(100),
+    GEO_POINT2 varchar(200)
+    );
+
+COPY insee_gps FROM 'C:\Users\Public\Data_SQL\Data_projet_transverse\insee_gps.CSV' CSV HEADER delimiter ';' null '';
+
+-- Création de deux  colonnes séparées pour la latitude et la longitude :
+alter table insee_gps add latitude_brut varchar(30);
+alter table insee_gps add longitude_brut varchar(30);
+
+update insee_gps set latitude_brut = split_part(geo_point2, ',', 1);
+update insee_gps set longitude_brut = split_part(geo_point2, ',', 2);
+
+-- Nous modifions le type de données :
+ALTER TABLE insee_gps ADD latitude float8;
+UPDATE insee_gps SET latitude =  CAST(REPLACE(latitude_brut , ',', '.') AS float8);
+
+ALTER TABLE insee_gps ADD longitude float8;
+UPDATE insee_gps SET longitude =  CAST(REPLACE(longitude_brut , ',', '.') AS float8);
+
+-- Nous supprimons les colonnes dont nous n'aurons plus besoin .
+ALTER TABLE insee_gps DROP geo_point2;
+ALTER TABLE insee_gps DROP latitude_brut;
+ALTER TABLE insee_gps DROP longitude_brut;
+
+select * from insee_gps;
+
+-- Maintenant nous vérifions le bon format des données pour les harmoniser et faire la jointure avec les autres deux 
+-- tables que nous allons créer (insee_gps_clients et insee_gps_magasins)
+
+    -- Colonne code_insee : clé pour jointure avec table client 
+select * from insee_gps where length(codeinsee) > 5;
+select * from insee_gps where length(codeinsee) < 5;
+
+update insee_gps set codeinsee = 
+(CASE
+    WHEN length(codeinsee) = 5 THEN codeinsee
+    WHEN length(codeinsee) < 5 THEN '0'|| codeinsee
+    ELSE null
+ END);
+
+-- Colonne code_postal : variable pour definir les coordonées GPS dans les communes avec plusieurs "libelledepartement"
+
+ALTER TABLE insee_gps add libelledepartement varchar(2);
+update insee_gps set libelledepartement = 
+(CASE
+    WHEN length(code_postal) = 5 THEN left(code_postal,2)
+    WHEN length(code_postal) = 4 THEN '0'|| left(code_postal,1)
+    WHEN length(code_postal) > 5 THEN left(code_postal,2)
+    ELSE null
+ END);
+alter table insee_gps drop code_postal;
+
+select * from insee_gps;
+
+-- Colonne commune : clé pour jointure avec table magasin (ville) 
+-- Nous remplaçons les '-' par ' ' et les 'SAINT' par 'ST' des deux tables concernées, ainsi que les 'CEDEX'
+update insee_gps set commune = 
+(CASE
+    WHEN commune like '%-%' THEN replace (commune, '-', ' ')
+    WHEN commune like '%SAINT%' THEN replace (commune, 'SAINT', 'ST')
+    WHEN commune = commune then commune
+    ELSE null
+ END);
+ 
+update ref_magasin set ville = 
+(CASE
+    WHEN ville like '%-%' THEN replace (ville, '-', ' ')
+    WHEN ville like '%SAINT%' THEN replace (ville, 'SAINT', 'ST')
+    WHEN ville like '%CEDEX%' then replace (ville, 'CEDEX', '')
+    WHEN ville = ville then ville
+    ELSE null
+ END); 
+
+    -- 2ème TABLE : DONNEES INSEE + CLIENTS
+    
+drop table IF EXISTS insee_gps_client;
+
+create table insee_gps_client 
+(
+    IDCLIENT bigint,
+    MAGASIN varchar(3),
+    CODEINSEE varchar(10), 
+    VILLE varchar(100),
+    latitude float8, 
+    longitude float8
+    );
+
+INSERT INTO insee_gps_client (IDCLIENT, MAGASIN, CODEINSEE, VILLE, latitude,longitude)      
+SELECT cli.idclient, cli.magasin, cli.codeinsee, gps.commune, gps.latitude, gps.longitude from client as cli
+left join insee_gps as gps on cli.codeinsee = gps.codeinsee;
+    
+-- Vérification nombre clients sans coordonnées GPS :
+select count(*) from insee_gps_client 
+where latitude is null
+and codeinsee is not null;
+    -- Total clients 845876, dont 35221 n'ont pas de coordonnees GPS sur notre nouvelle table vs 27421 clients sans 
+    -- codeinsee sur table client. L'écart de 7800 clients vient des adresses en Suisse, donc pas de codeinsee ou
+    -- d'addresse connue.
+
+    -- 3ème TABLE : DONNEES INSEE + MAGASINS
+
+drop table IF EXISTS insee_gps_mag_brut;
+
+create table insee_gps_mag_brut
+(
+    CODESOCIETE varchar(3),
+    VILLE varchar(100),
+    MAG_libelledepartement varchar(2),
+    COMMUNE varchar(100), 
+    latitude float8, 
+    longitude float8,
+    GPS_libelledepartement varchar(2)
+    );
+
+INSERT INTO insee_gps_mag_brut (CODESOCIETE, VILLE, MAG_libelledepartement, COMMUNE, latitude, longitude, GPS_libelledepartement)       
+SELECT mag.codesociete, mag.ville, mag.libelledepartement, gps.commune, gps.latitude, gps.longitude, gps.libelledepartement 
+from ref_magasin as mag
+left join insee_gps as gps on mag.ville = gps.commune;
+
+-- Nous vérifions les valeurs où la latitude est « null » :
+select * from insee_gps_mag_brut where latitude is null;
+
+-- Pour ces 3 villes/communes nous constatons des erreus de saisie (espaces à la fin) sur la table ref_magasin
+select * from insee_gps_mag_brut where commune like '%ST JULIEN EN GENEVOIS%';
+SELECT * from ref_magasin where ville like '%ST JULIEN EN GENEVOIS%';  -- Espace à la fin
+select * from insee_gps_mag_brut where commune like '%LABEGE%';
+select * from ref_magasin where ville like '%LABEGE%'; -- Espace à la fin
+select * from insee_gps_mag_brut where commune like '%NEVERS%';
+select * from ref_magasin where ville like '%NEVERS%'; -- Espace à la fin
+
+-- Nous enlevons le ' ' à la fin sur la table et on met à jour les valeurs depuis la table insee_gps ;
+UPDATE insee_gps_mag_brut
+SET ville = 'ST JULIEN EN GENEVOIS', MAG_libelledepartement = 74, commune = 'ST JULIEN EN GENEVOIS', 
+latitude ='46.139365545' , longitude = '6.07881171095', GPS_libelledepartement = 74
+WHERE ville = 'ST JULIEN EN GENEVOIS ';
+
+UPDATE insee_gps_mag_brut
+SET ville = 'LABEGE', MAG_libelledepartement = 31, commune = 'LABEGE', 
+latitude ='43.539137717' , longitude ='1.5206207109', GPS_libelledepartement = 31 
+WHERE ville = 'LABEGE ';
+
+UPDATE insee_gps_mag_brut
+SET ville = 'NEVERS', MAG_libelledepartement = 58,commune = 'NEVERS', 
+latitude ='46.9881194908' , longitude ='3.15689130958', GPS_libelledepartement = 58 
+WHERE ville = 'NEVERS ';
+
+-- Pour 'LES MILLES', aucune commune ne corresponde sur la table insee_gps, après recherche nous saisons nous-mêmes 
+-- les valeurs
+UPDATE insee_gps_mag_brut
+SET commune = 'AIX EN PROVENCE', MAG_libelledepartement = 13, latitude = '43.5360708378', longitude = '5.39857444582', 
+GPS_libelledepartement = 13
+WHERE ville = 'LES MILLES';
+
+-- Verification finale :
+select * from insee_gps_mag_brut where latitude is null; -- OK !
+
+-- Il y a des magasins en doublon (88 au lieu de 67) , avec plusieurs coordonnées GPS, car ces communes ont plusieurs 
+-- libellé département sur la table INSEE. Nous allons garder les coordonnées GPS qui correspondent au libellé département 
+-- notre table ref_magasin, en harmonisant d'abord le libellé département
+
+update insee_gps_mag_brut set mag_libelledepartement = 
+(CASE
+    WHEN length(mag_libelledepartement) = 2 THEN mag_libelledepartement
+    WHEN length(mag_libelledepartement) = 1 THEN '0'|| left(mag_libelledepartement,1)
+    ELSE null
+ END);
+ 
+-- Nous remettons toutes ces données traitées dans la nouvelle table avec laquelle nous allons travailler.
+
+drop table IF EXISTS insee_gps_mag;
+
+create table insee_gps_mag
+(
+    CODESOCIETE varchar(3),
+    VILLE varchar(100),
+    MAG_libelledepartement varchar(2),
+    COMMUNE varchar(100), 
+    latitude float8, 
+    longitude float8,
+    GPS_libelledepartement varchar(2)
+    );
+
+INSERT INTO insee_gps_mag (CODESOCIETE, VILLE, MAG_libelledepartement, COMMUNE, latitude, longitude, GPS_libelledepartement)        
+select CODESOCIETE, VILLE, MAG_libelledepartement, COMMUNE, latitude, longitude, GPS_libelledepartement from insee_gps_mag_brut
+where gps_libelledepartement = mag_libelledepartement;
+
+select * from insee_gps_mag;
+
+drop table insee_gps_mag_brut;
+
+    -- TABLE FINALE SUR LAQUELLE NOUS APPLIQUERONS NOTRE FORMULE 
+
+drop table if exists jointure_client_magasin_brut;
+create table jointure_client_magasin_brut
+(
+    IDCLIENT bigint,
+    CLIENT_LATITUDE float8, 
+    CLIENT_LONGITUDE float8,
+    MAGASIN varchar(3),
+    MAGASIN_LATITUDE float8, 
+    MAGASIN_LONGITUDE float8
+);
+
+INSERT INTO jointure_client_magasin_brut (IDCLIENT, CLIENT_LATITUDE, CLIENT_LONGITUDE, MAGASIN, MAGASIN_LATITUDE, MAGASIN_LONGITUDE)
+SELECT cli.idclient, cli.latitude, cli.longitude, mag.codesociete, mag.latitude, mag.longitude from insee_gps_client as cli
+left join insee_gps_mag as mag on cli.magasin = mag.codesociete;
+
+select * from jointure_client_magasin_brut;
+
+    -- FONCTION QUI DETERMINE LA DISTANCE ETNRE 2 POINTS (4 variables)
+    
+create function distance (client_latitude float8,client_longitude float8,magasin_latitude float8,magasin_longitude float8) 
+    returns numeric 
+    as 'SELECT(ACOS(SIN(RADIANS(client_latitude))*SIN(RADIANS(magasin_latitude))
+                  +COS(RADIANS(client_latitude))*COS(RADIANS(magasin_latitude))
+                  *COS(RADIANS(client_longitude-magasin_longitude)))*6371)'
+    LANGUAGE SQL
+    IMMUTABLE
+    RETURNS NULL ON NULL INPUT;
+
+-- Verification de la formule avec ces coordonnees:
+    -- lat1     45.6155606962   --lat2  45.6181733164
+    -- long1    5.18598476312   --long2 5.22290423925
+select * from distance(45.6155606962,5.18598476312,45.6181733164,5.22290423925)
+    --2.88km, ok (vérfié sur https://www.lexilogos.com/calcul_distances.htm)
+    
+
+-- La formule fonctionne en "float8" pour toutes les valeurs, sauf pour celles dans les magasins 'FRV', 'NEV','PEP','POC', 
+-- où les clients et les magasins partagent les mêmes coordonnées (même code postal). Nous appliquons la formule dans ces
+-- deux groupes séparément et ensuite nous créons une seule table pour travailler avec :
+
+    -- 1er groupe :
+drop table if exists jointure_client_magasin;
+
+create table jointure_client_magasin
+(
+    IDCLIENT bigint,
+    CLIENT_LATITUDE float8, 
+    CLIENT_LONGITUDE float8,
+    MAGASIN varchar(3),
+    MAGASIN_LATITUDE float8, 
+    MAGASIN_LONGITUDE float8,
+    DISTANCE numeric
+);
+
+INSERT INTO jointure_client_magasin (IDCLIENT, CLIENT_LATITUDE, CLIENT_LONGITUDE, MAGASIN, MAGASIN_LATITUDE, MAGASIN_LONGITUDE, DISTANCE)
+select *, distance (client_latitude, client_longitude, magasin_latitude,magasin_longitude) from jointure_client_magasin_brut
+where magasin in ('ALB','ALM','AVI','BAR','BEA','BEC','BLA','BRE','BSN','CAG','CLA', 'CLI','DIJ','DUM','ECU','EPN', 'EST',
+                 'FEG','GAI','GAP','GEX','HAG','HEI','IAB','LAB','MAC','MAN','MET','MOB','MOU','MUL','OBE','ORL','PEG','PON','PRI','QUE','RAV','SAL','SCH','SEM','SEY','SGL','SJV','SLM','SMA','SMR','SNO',
+                 'SSM','STE','STR','SUR','THO','VAL','VAR','VEN','VIB','VIC','VIF','VIT','VIV','VLG');
+
+select * from jointure_client_magasin;
+
+    --2e groupe :
+
+drop table if exists jointure_client_magasin_bis;
+
+create table jointure_client_magasin_bis
+(
+    IDCLIENT bigint,
+    CLIENT_LATITUDE float8, 
+    CLIENT_LONGITUDE float8,
+    MAGASIN varchar(3),
+    MAGASIN_LATITUDE float8, 
+    MAGASIN_LONGITUDE float8,
+    DISTANCE numeric
+);
+
+INSERT INTO jointure_client_magasin_bis (IDCLIENT, CLIENT_LATITUDE, CLIENT_LONGITUDE, MAGASIN, MAGASIN_LATITUDE, MAGASIN_LONGITUDE, DISTANCE)
+select *, distance (round(client_latitude::numeric,8), round(client_longitude::numeric,8), round(magasin_latitude::numeric,8),
+round(magasin_longitude::numeric,8)) from jointure_client_magasin_brut
+where magasin in('FRV', 'NEV','PEP','POC', 'RMA');
+
+select * from jointure_client_magasin_bis;
+
+-- Nous joignons les deux tables et supprimons celles dont nous n'aurons plus besoin :
+insert into jointure_client_magasin select * from jointure_client_magasin_bis;
+
+select * from jointure_client_magasin;
+
+drop table jointure_client_magasin_bis;
+drop table jointure_client_magasin_brut;
+
+-- Nous regroupons en fonction de la distance : 
+    
+ALTER TABLE jointure_client_magasin ADD INDICE_DIST varchar(20);
+
+UPDATE jointure_client_magasin SET INDICE_DIST =
+    (CASE 
+        WHEN DISTANCE between 0 and 5 THEN '1. Entre 0 et 5km'
+        WHEN DISTANCE between 5 and 10 THEN '2. Entre 5 et 10km'
+        WHEN DISTANCE between 10 and 20 THEN '3. Entre 10 et 20km'
+        WHEN DISTANCE between 20 and 50 THEN '4. Entre 20 et 50km'
+        WHEN DISTANCE > 50 THEN '5. Plus de 50km'
+        ELSE '6. Distance inconnue'
+    END);
+
+select * from jointure_client_magasin;
+
+	--- Voici la table que nous exportons avec les données pour créer le tableau sur excel ---
+select indice_dist, count(distinct(idclient)) from jointure_client_magasin
+group by indice_dist
+order by indice_dist asc;
+
+----------------------------------------
+--- 3. ETUDE PAR UNIVERS ---
+--- 3.A) EVOLUTION DU CA (N-2 & N-1) :
+
+-- Création de la table de l'évolution CA par Univers 
+drop table if exists CA_UNIVERS;
+CREATE TABLE IF NOT EXISTS CA_UNIVERS
+(
+ANNEE VARCHAR (4),
+UNIVERS VARCHAR (10),
+TOTAL_CA FLOAT
+);
+
+-- Alimenter la table avec la joincture des tables permettant de nous doner les informations démandées.
+-- L'usage de LEFT JOIN nous assure l'incorporation de tous les articles.
+INSERT INTO CA_UNIVERS (ANNEE, UNIVERS, TOTAL_CA)
+SELECT EXTRACT('year' FROM E.TIC_DATE), A.CODEUNIVERS, ROUND(SUM(L.TOTAL))
+FROM LIGNES_TICKET L
+LEFT JOIN REF_ARTICLE A
+ON A.CODEARTICLE = L.IDARTICLE
+LEFT JOIN ENTETE_TICKET E
+ON E.IDTICKET = L.IDTICKET
+GROUP BY EXTRACT('year' FROM E.TIC_DATE), A.CODEUNIVERS;
+
+-- Nous allons appeler "INCONNU" les univers dont le résultat est NULL.
+
+UPDATE CA_UNIVERS SET UNIVERS = 'INCONNU'
+WHERE UNIVERS IS NULL;
+
+		-- Voici la table que nous exportons pour créer le graph sur excell --
+SELECT * FROM CA_UNIVERS
+ORDER BY ANNEE, UNIVERS;
+
+--- 3.B) TOP PAR UNIVERS :
+-- Création de la table top_univers
+drop table if exists top_univers;
+
+create table if not exists top_univers (
+    univers varchar(10),
+    famille varchar(10),
+    marge float
+    );
+
+-- Intégration de la marge par famille et univers dans la table top_univers (nous effectuons un left join avec ref_article afin 
+-- d'obtenir tous les univers même inconnus pour tous les articles)
+insert into top_univers (univers, famille, marge)   
+select ra.codeunivers, ra.codefamille, sum(lt.margesortie) from lignes_ticket as lt
+left join ref_article as ra
+on lt.idarticle = ra.codearticle
+group by ra.codeunivers, ra.codefamille 
+order by ra.codeunivers, sum(lt.margesortie) desc;
+
+-- Pour les codes univers et code famille manquants, nous indiquons la mention "Inconnu"
+update top_univers set univers = 'INCONNU'
+where univers is null;
+
+update top_univers set famille = 'INCONNU'
+where famille is null;
+
+-- Vérification du nombre de familles par univers (nous en voulons 5 au maximum) 
+select univers, count(univers) from top_univers group by univers order by count(univers) desc;
+
+
+-- Nous supprimons de la table top_univers les 6 familles les moins rentables de l'univers U1: la clause offset nous permet de 
+-- récupérer la valeur de marge du 5ème élément le plus rentable et de pouvoir l'appliquer comme critère pour supprimer les lignes 
+-- où la marge est inférieure à cette valeur
+delete from top_univers where univers = 'U1' and marge <
+(SELECT marge FROM top_univers where univers = 'U1' ORDER BY marge asc LIMIT 1 OFFSET (11-5));
+
+select * from top_univers;
+
+		-- Export de la table top_univers au format csv (séparateur ;) pour data vizualisation sous excel.--
